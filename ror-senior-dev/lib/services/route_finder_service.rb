@@ -2,10 +2,10 @@
 
 module RouteFinder
   class RouteFinderService
-    def initialize(data)
-      @sailings = data['sailings']
-      @rates = data['rates']
-      @exchange_rates = data['exchange_rates']
+    def initialize(sailings, rates, exchange_rates)
+      @sailings = sailings
+      @rates = rates
+      @exchange_rates = exchange_rates
       @rates_by_code = @rates.each_with_object({}) { |r, h| h[r['sailing_code']] = r }
     end
 
