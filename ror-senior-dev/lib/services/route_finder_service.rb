@@ -39,7 +39,7 @@ module RouteFinder
         )]
       end
 
-      cheapest
+      cheapest.empty? ? [] : cheapest
     end
   end
 end
