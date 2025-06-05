@@ -11,11 +11,7 @@ module RouteFinder
       @exchange_rates = exchange_rates
       @rates_by_code = @rates.each_with_object({}) { |r, h| h[r['sailing_code']] = r }
 
-      # Process and filter sailings once during initialization, merging rate information
-      @processed_sailings = process_sailings(@sailings)
-
-      # Create an adjacency list for faster lookup
-      @port_connections = build_port_connections
+      @processed_sailings, @port_connections = process_sailings_and_connections(@sailings)
     end
 
     def find_cheapest_direct(origin, destination)
@@ -149,31 +145,24 @@ module RouteFinder
 
     # Process and filter sailings during initialization
     # Merge sailing and rate information, discarding sailings without valid rates
-    def process_sailings(sailings)
-      sailings.filter_map do |sailing|
+    def process_sailings_and_connections(sailings)
+      connections = Hash.new { |h, k| h[k] = [] }
+      processed = sailings.filter_map do |sailing|
         rate_info = @rates_by_code[sailing['sailing_code']]
         next unless rate_info
 
         currency = rate_info['rate_currency'].downcase
-
         next unless currency == 'eur' ||
                     @exchange_rates.dig(sailing['departure_date'], currency)&.positive?
 
-        # Merge sailing and rate information
-        sailing.merge(
+        merged = sailing.merge(
           'rate' => rate_info['rate'],
           'rate_currency' => rate_info['rate_currency']
         )
+        connections[merged['origin_port']] << merged
+        merged
       end
-    end
-
-    # Build adjacency list for faster lookup of connections
-    def build_port_connections
-      connections = Hash.new { |h, k| h[k] = [] }
-      @processed_sailings.each do |sailing|
-        connections[sailing['origin_port']] << sailing
-      end
-      connections
+      [processed, connections]
     end
 
     # Find all valid next sailings from a port after a specific date
