@@ -22,9 +22,11 @@ module RouteFinder
       min_rate_eur_cents = nil
       cheapest = []
 
-      @processed_sailings.each do |sailing|
-        next unless sailing['origin_port'] == origin &&
-                    sailing['destination_port'] == destination
+      # Use port_connections to only check sailings from the origin port
+      origin_sailings = @port_connections[origin] || []
+
+      origin_sailings.each do |sailing|
+        next unless sailing['destination_port'] == destination
 
         rate_info = @rates_by_code[sailing['sailing_code']]
         next unless rate_info
