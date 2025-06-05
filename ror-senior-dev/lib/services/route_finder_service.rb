@@ -156,10 +156,21 @@ module RouteFinder
         # Convert rate to integer cents, but keep original rate for backward compatibility
         rate_cents = (rate_info['rate'].to_f * 100).round
 
+        # Pre-parse dates into Date objects to avoid repeated parsing
+        begin
+          departure_date = Date.parse(sailing['departure_date'])
+          arrival_date = Date.parse(sailing['arrival_date'])
+        rescue Date::Error
+          # Skip sailings with invalid dates
+          next
+        end
+
         merged = sailing.merge(
           'rate' => rate_info['rate'], # Keep original rate for backward compatibility
           'rate_cents' => rate_cents,
-          'rate_currency' => rate_info['rate_currency']
+          'rate_currency' => rate_info['rate_currency'],
+          'departure_date_obj' => departure_date,
+          'arrival_date_obj' => arrival_date
         )
         connections[merged['origin_port']] << merged
         merged
@@ -173,13 +184,14 @@ module RouteFinder
       sailings.select do |sailing|
         # Check if departure date is on or after previous arrival
         if prev_arrival_date
-          begin
-            departure = Date.parse(sailing['departure_date'])
-            arrival = Date.parse(prev_arrival_date)
-            next false if departure <= arrival
-          rescue Date::Error
-            next false # Skip if dates can't be parsed
-          end
+          # Use the pre-parsed date objects instead of parsing again
+          departure_date = sailing['departure_date_obj']
+
+          # If we're given a string for prev_arrival_date, parse it once
+          arrival_date = prev_arrival_date.is_a?(Date) ? prev_arrival_date : Date.parse(prev_arrival_date)
+
+          # Skip if departure is before or equal to arrival
+          next false if departure_date <= arrival_date
         end
 
         # Don't go to ports we've already visited
