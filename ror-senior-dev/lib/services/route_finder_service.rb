@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+# Validate all the values in the json files and discard all wrong values
+
 require 'pqueue'
 require 'date'
 
@@ -24,21 +26,8 @@ module RouteFinder
       origin_sailings.each do |sailing|
         next unless sailing['destination_port'] == destination
 
-        # Rate information is already merged in the sailing object
-        currency = sailing['rate_currency'].downcase
-        rate_in_currency = sailing['rate'].to_f
-
-        if currency == 'eur'
-          # EUR is the base currency, no conversion needed
-          rate_eur = rate_in_currency
-        else
-          currency_rate = @exchange_rates.dig(sailing['departure_date'], currency)
-          next unless currency_rate&.positive?
-
-          rate_eur = rate_in_currency / currency_rate.to_f
-        end
-
-        rate_eur_cents = (rate_eur * 100).round
+        rate_eur_cents = calculate_cost_in_eur_cents(sailing)
+        next unless rate_eur_cents # Skip if rate calculation failed
 
         next unless min_rate_eur_cents.nil? || rate_eur_cents < min_rate_eur_cents
 
