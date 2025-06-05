@@ -1,6 +1,13 @@
 # frozen_string_literal: true
 
-# spec/services/route_finder_service_spec.rb
+# We need to check for having multiple routes for the same origin and destination
+# and return the cheapest one that match the criteria for the departure_date, based on the arrival_date of
+# the previous route.
+
+# We should try to see if we can work with integers converting the rates to cents and the exchange rates to integers as well,
+# so we can avoid floating point precision issues. This way, we can store the rates in cents and exchange rates as integers
+# and then we can compare them directly without having to worry about floating point precision issues.
+
 require_relative '../spec_helper'
 require_relative '../../lib/services/route_finder_service'
 
@@ -103,12 +110,12 @@ RSpec.describe RouteFinder::RouteFinderService do
 
   let(:exchange_rates) do
     {
-      '2022-02-01' => { 'usd' => 1.126, 'jpy' => 129.5 },
-      '2022-01-30' => { 'usd' => 1.1138, 'jpy' => 128.7 },
-      '2022-02-10' => { 'usd' => 1.13, 'jpy' => 130.0 },
-      '2022-01-29' => { 'usd' => 1.11, 'jpy' => 128.5 },
-      '2022-02-16' => { 'usd' => 1.13, 'jpy' => 130.2 },
       '2022-01-25' => { 'usd' => 1.10, 'jpy' => 127.8 },
+      '2022-01-29' => { 'usd' => 1.11, 'jpy' => 128.5 },
+      '2022-01-30' => { 'usd' => 1.1138, 'jpy' => 128.7 },
+      '2022-02-01' => { 'usd' => 1.126, 'jpy' => 129.5 },
+      '2022-02-10' => { 'usd' => 1.13, 'jpy' => 130.0 },
+      '2022-02-16' => { 'usd' => 1.13, 'jpy' => 130.2 },
       '2022-02-20' => { 'usd' => 1.14, 'jpy' => 131.0 }
     }
   end
@@ -135,7 +142,7 @@ RSpec.describe RouteFinder::RouteFinderService do
         expect(result).to be_empty
       end
 
-      it 'excludes sailings without exchange rates' do
+      it 'excludes sailings without exchange rates for rates other than EUR' do
         modified_exchange_rates = exchange_rates.dup
         modified_exchange_rates.delete('2022-01-30')
 
@@ -144,6 +151,17 @@ RSpec.describe RouteFinder::RouteFinderService do
 
         expect(result.size).to eq(1)
         expect(result.first['sailing_code']).to eq('ABCD')
+      end
+
+      it 'dose not exclude sailings without exchange rates for rates in EUR' do
+        modified_exchange_rates = exchange_rates.dup
+        modified_exchange_rates.delete('2022-01-29')
+
+        service_with_missing = described_class.new(sailings, rates, modified_exchange_rates)
+        result = service_with_missing.find_cheapest_direct('CNSHA', 'ESBCN')
+
+        expect(result.size).to eq(1)
+        expect(result.first['sailing_code']).to eq('ERXQ')
       end
     end
   end
@@ -202,8 +220,13 @@ RSpec.describe RouteFinder::RouteFinderService do
         result.each do |leg|
           currency = leg['rate_currency'].downcase
           rate_in_currency = leg['rate'].to_f
-          currency_rate = exchange_rates[leg['departure_date']][currency]
-          total_eur_cost += rate_in_currency / currency_rate.to_f
+          leg_rate = if currency == 'eur'
+                       rate_in_currency
+                     else
+                       currency_rate = exchange_rates[leg['departure_date']][currency]
+                       rate_in_currency / currency_rate.to_f
+                     end
+          total_eur_cost += leg_rate
         end
 
         # The total should be less than any direct option or other indirect routes
