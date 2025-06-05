@@ -7,12 +7,20 @@ require 'date'
 
 module RouteFinder
   class RouteFinderService
+    # Constant to represent "infinity" for integer-based cost calculations
+    MAX_COST = 2_147_483_647 # Max 32-bit signed integer
+
+    # Initialize the service with data
     def initialize(sailings, rates, exchange_rates)
       @sailings = sailings
       @rates = rates
-      @exchange_rates = exchange_rates
+      @rate_scale = 10_000 # Scale factor for exchange rates
       @rates_by_code = @rates.each_with_object({}) { |r, h| h[r['sailing_code']] = r }
 
+      # Process exchange rates first so they're available for sailing processing
+      @exchange_rates = process_exchange_rates(exchange_rates)
+
+      # Then process sailings using the processed exchange rates
       @processed_sailings, @port_connections = process_sailings_and_connections(@sailings)
     end
 
@@ -55,7 +63,8 @@ module RouteFinder
 
       # Track best solution found so far
       best_solution = nil
-      best_cost = Float::INFINITY
+      # Use a very large integer instead of Float::INFINITY to stay in the integer domain
+      best_cost = MAX_COST
 
       # If we have a direct route, use its cost as initial best cost
       if direct_route.any?
@@ -144,8 +153,12 @@ module RouteFinder
         next unless currency == 'eur' ||
                     @exchange_rates.dig(sailing['departure_date'], currency)&.positive?
 
+        # Convert rate to integer cents, but keep original rate for backward compatibility
+        rate_cents = (rate_info['rate'].to_f * 100).round
+
         merged = sailing.merge(
-          'rate' => rate_info['rate'],
+          'rate' => rate_info['rate'], # Keep original rate for backward compatibility
+          'rate_cents' => rate_cents,
           'rate_currency' => rate_info['rate_currency']
         )
         connections[merged['origin_port']] << merged
@@ -178,19 +191,35 @@ module RouteFinder
     def calculate_cost_in_eur_cents(sailing)
       # Rate information is already merged in the sailing object
       currency = sailing['rate_currency'].downcase
-      rate_in_currency = sailing['rate'].to_f
 
-      if currency == 'eur'
-        # EUR is the base currency, no conversion needed
-        rate_eur = rate_in_currency
-      else
-        currency_rate = @exchange_rates[sailing['departure_date']][currency]
-        return nil unless currency_rate&.positive?
+      # Use rate_cents that we pre-calculated during initialization
+      rate_in_cents = sailing['rate_cents']
+      return nil unless rate_in_cents
 
-        rate_eur = rate_in_currency / currency_rate.to_f
+      return rate_in_cents if currency == 'eur'
+
+      # EUR is the base currency, no conversion needed
+
+      scaled_exchange_rate = @exchange_rates.dig(sailing['departure_date'], currency)
+      return nil unless scaled_exchange_rate&.positive?
+
+      # Convert to EUR cents using integer arithmetic
+      # The formula is: (rate_in_cents * rate_scale) / scaled_exchange_rate
+      # This keeps everything in integer domain until the final division
+      (rate_in_cents * @rate_scale) / scaled_exchange_rate
+    end
+
+    # Process exchange rates to convert them to integers
+    def process_exchange_rates(exchange_rates)
+      # Scale factor for exchange rates
+      scale_factor = @rate_scale
+
+      # Convert exchange rates to integers (cents)
+      exchange_rates.each_with_object({}) do |(date, rates), result|
+        result[date] = rates.transform_values do |rate|
+          rate ? (rate.to_f * scale_factor).round : nil
+        end
       end
-
-      (rate_eur * 100).round
     end
   end
 end
