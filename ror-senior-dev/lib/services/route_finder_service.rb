@@ -16,6 +16,7 @@ module RouteFinder
       @rates = rates
       @rate_scale = 10_000 # Scale factor for exchange rates
       @rates_by_code = @rates.each_with_object({}) { |r, h| h[r['sailing_code']] = r }
+      @cost_cache = {} # Memoization cache for calculate_cost_in_eur_cents
 
       # Process exchange rates first so they're available for sailing processing
       @exchange_rates = process_exchange_rates(exchange_rates)
@@ -201,6 +202,10 @@ module RouteFinder
 
     # Calculate the cost of a sailing in EUR cents
     def calculate_cost_in_eur_cents(sailing)
+      # Check if we've already calculated the cost for this sailing
+      sailing_code = sailing['sailing_code']
+      return @cost_cache[sailing_code] if @cost_cache.key?(sailing_code)
+
       # Rate information is already merged in the sailing object
       currency = sailing['rate_currency'].downcase
 
@@ -208,17 +213,21 @@ module RouteFinder
       rate_in_cents = sailing['rate_cents']
       return nil unless rate_in_cents
 
-      return rate_in_cents if currency == 'eur'
+      result = if currency == 'eur'
+                 rate_in_cents # EUR is the base currency, no conversion needed
+               else
+                 scaled_exchange_rate = @exchange_rates.dig(sailing['departure_date'], currency)
+                 return nil unless scaled_exchange_rate&.positive?
 
-      # EUR is the base currency, no conversion needed
+                 # Convert to EUR cents using integer arithmetic
+                 # The formula is: (rate_in_cents * rate_scale) / scaled_exchange_rate
+                 # This keeps everything in integer domain until the final division
+                 (rate_in_cents * @rate_scale) / scaled_exchange_rate
+               end
 
-      scaled_exchange_rate = @exchange_rates.dig(sailing['departure_date'], currency)
-      return nil unless scaled_exchange_rate&.positive?
-
-      # Convert to EUR cents using integer arithmetic
-      # The formula is: (rate_in_cents * rate_scale) / scaled_exchange_rate
-      # This keeps everything in integer domain until the final division
-      (rate_in_cents * @rate_scale) / scaled_exchange_rate
+      # Cache the result for future lookups
+      @cost_cache[sailing_code] = result
+      result
     end
 
     # Process exchange rates to convert them to integers
