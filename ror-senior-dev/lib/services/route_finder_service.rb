@@ -11,7 +11,7 @@ module RouteFinder
       @exchange_rates = exchange_rates
       @rates_by_code = @rates.each_with_object({}) { |r, h| h[r['sailing_code']] = r }
 
-      # Process and filter sailings once during initialization
+      # Process and filter sailings once during initialization, merging rate information
       @processed_sailings = process_sailings(@sailings)
 
       # Create an adjacency list for faster lookup
@@ -28,11 +28,9 @@ module RouteFinder
       origin_sailings.each do |sailing|
         next unless sailing['destination_port'] == destination
 
-        rate_info = @rates_by_code[sailing['sailing_code']]
-        next unless rate_info
-
-        currency = rate_info['rate_currency'].downcase
-        rate_in_currency = rate_info['rate'].to_f
+        # Rate information is already merged in the sailing object
+        currency = sailing['rate_currency'].downcase
+        rate_in_currency = sailing['rate'].to_f
 
         if currency == 'eur'
           # EUR is the base currency, no conversion needed
@@ -49,11 +47,7 @@ module RouteFinder
         next unless min_rate_eur_cents.nil? || rate_eur_cents < min_rate_eur_cents
 
         min_rate_eur_cents = rate_eur_cents
-        cheapest = [sailing.merge(
-          'rate' => rate_info['rate'],
-          'rate_currency' => rate_info['rate_currency'],
-          'rate_eur_cents' => rate_eur_cents
-        )]
+        cheapest = [sailing.merge('rate_eur_cents' => rate_eur_cents)]
       end
 
       cheapest.empty? ? [] : cheapest
@@ -144,43 +138,36 @@ module RouteFinder
       # If best solution is already a processed direct route, return it directly
       return best_solution if best_solution.is_a?(Array) && best_solution.first.key?('rate')
 
-      # Add rate information to the final result
+      # Add rate_eur_cents information to the final result
       best_solution.map do |sailing|
-        rate_info = @rates_by_code[sailing['sailing_code']]
         rate_eur_cents = calculate_cost_in_eur_cents(sailing)
-        sailing.merge(
-          'rate' => rate_info['rate'],
-          'rate_currency' => rate_info['rate_currency'],
-          'rate_eur_cents' => rate_eur_cents
-        )
+        sailing.merge('rate_eur_cents' => rate_eur_cents)
       end
     end
 
     private
 
     # Process and filter sailings during initialization
+    # Merge sailing and rate information, discarding sailings without valid rates
     def process_sailings(sailings)
-      sailings.select do |sailing|
+      sailings.filter_map do |sailing|
         rate_info = @rates_by_code[sailing['sailing_code']]
-        next false unless rate_info
+        next unless rate_info
 
         currency = rate_info['rate_currency'].downcase
 
-        # EUR is the base currency, only need to check if departure date exists
-        if currency == 'eur'
-          true
-        else
-          # For other currencies, need exchange rate for the departure date
-          next false unless @exchange_rates.key?(sailing['departure_date'])
+        next unless currency == 'eur' ||
+                    @exchange_rates.dig(sailing['departure_date'], currency)&.positive?
 
-          currency_rate = @exchange_rates[sailing['departure_date']][currency]
-          currency_rate&.positive?
-        end
+        # Merge sailing and rate information
+        sailing.merge(
+          'rate' => rate_info['rate'],
+          'rate_currency' => rate_info['rate_currency']
+        )
       end
     end
 
     # Build adjacency list for faster lookup of connections
-    # TODO: Could we mix this function with process_sailings?
     def build_port_connections
       connections = Hash.new { |h, k| h[k] = [] }
       @processed_sailings.each do |sailing|
@@ -211,11 +198,9 @@ module RouteFinder
 
     # Calculate the cost of a sailing in EUR cents
     def calculate_cost_in_eur_cents(sailing)
-      rate_info = @rates_by_code[sailing['sailing_code']]
-      return nil unless rate_info
-
-      currency = rate_info['rate_currency'].downcase
-      rate_in_currency = rate_info['rate'].to_f
+      # Rate information is already merged in the sailing object
+      currency = sailing['rate_currency'].downcase
+      rate_in_currency = sailing['rate'].to_f
 
       if currency == 'eur'
         # EUR is the base currency, no conversion needed
