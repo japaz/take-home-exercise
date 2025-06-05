@@ -1,9 +1,5 @@
 # frozen_string_literal: true
 
-# We need to check for having multiple routes for the same origin and destination
-# and return the cheapest one that match the criteria for the departure_date, based on the arrival_date of
-# the previous route.
-
 # We should try to see if we can work with integers converting the rates to cents and the exchange rates to integers as well,
 # so we can avoid floating point precision issues. This way, we can store the rates in cents and exchange rates as integers
 # and then we can compare them directly without having to worry about floating point precision issues.
@@ -283,6 +279,51 @@ RSpec.describe RouteFinder::RouteFinderService do
         # The cheapest could be the three-leg route or another route depending on rates
         # This test verifies that the service can handle multi-leg routes, not necessarily that it picks a specific one
         expect(result).not_to be_empty
+      end
+
+      it 'does not select a sailing if its departure_date is before or equal to the previous arrival_date' do
+        sailings = [
+          {
+            'origin_port' => 'USNYC',
+            'destination_port' => 'GBLIV',
+            'departure_date' => '2022-04-01',
+            'arrival_date' => '2022-04-10',
+            'sailing_code' => 'NYLIV1'
+          },
+          {
+            'origin_port' => 'GBLIV',
+            'destination_port' => 'DEHAM',
+            'departure_date' => '2022-04-10', # Not valid, same as previous arrival
+            'arrival_date' => '2022-04-15',
+            'sailing_code' => 'LIVHAM1'
+          },
+          {
+            'origin_port' => 'GBLIV',
+            'destination_port' => 'DEHAM',
+            'departure_date' => '2022-04-12', # Valid, after previous arrival
+            'arrival_date' => '2022-04-18',
+            'sailing_code' => 'LIVHAM2'
+          }
+        ]
+
+        rates = [
+          { 'sailing_code' => 'NYLIV1', 'rate' => '200.00', 'rate_currency' => 'USD' },
+          { 'sailing_code' => 'LIVHAM1', 'rate' => '50.00', 'rate_currency' => 'USD' }, # Cheaper but invalid due to date
+          { 'sailing_code' => 'LIVHAM2', 'rate' => '80.00', 'rate_currency' => 'USD' }
+        ]
+
+        exchange_rates = {
+          '2022-04-01' => { 'usd' => 1.10 },
+          '2022-04-10' => { 'usd' => 1.12 },
+          '2022-04-12' => { 'usd' => 1.13 }
+        }
+
+        service = described_class.new(sailings, rates, exchange_rates)
+        result = service.find_cheapest_route('USNYC', 'DEHAM')
+
+        expect(result.size).to eq(2)
+        expect(result[0]['sailing_code']).to eq('NYLIV1')
+        expect(result[1]['sailing_code']).to eq('LIVHAM2')
       end
     end
   end

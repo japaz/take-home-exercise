@@ -22,7 +22,7 @@ module RouteFinder
       min_rate_eur_cents = nil
       cheapest = []
 
-      @sailings.each do |sailing|
+      @processed_sailings.each do |sailing|
         next unless sailing['origin_port'] == origin &&
                     sailing['destination_port'] == destination
 
@@ -166,18 +166,19 @@ module RouteFinder
 
         # EUR is the base currency, only need to check if departure date exists
         if currency == 'eur'
-          @exchange_rates.key?(sailing['departure_date'])
+          true
         else
           # For other currencies, need exchange rate for the departure date
           next false unless @exchange_rates.key?(sailing['departure_date'])
 
           currency_rate = @exchange_rates[sailing['departure_date']][currency]
-          currency_rate && currency_rate.to_f > 0
+          currency_rate&.positive?
         end
       end
     end
 
     # Build adjacency list for faster lookup of connections
+    # TODO: Could we mix this function with process_sailings?
     def build_port_connections
       connections = Hash.new { |h, k| h[k] = [] }
       @processed_sailings.each do |sailing|
@@ -195,7 +196,7 @@ module RouteFinder
           begin
             departure = Date.parse(sailing['departure_date'])
             arrival = Date.parse(prev_arrival_date)
-            next false if departure < arrival
+            next false if departure <= arrival
           rescue Date::Error
             next false # Skip if dates can't be parsed
           end
@@ -219,7 +220,7 @@ module RouteFinder
         rate_eur = rate_in_currency
       else
         currency_rate = @exchange_rates[sailing['departure_date']][currency]
-        return nil unless currency_rate && currency_rate.to_f > 0
+        return nil unless currency_rate&.positive?
 
         rate_eur = rate_in_currency / currency_rate.to_f
       end
