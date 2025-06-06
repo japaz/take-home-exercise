@@ -1,0 +1,35 @@
+# Git files
+.git
+.gitignore
+
+# Documentation
+README.md
+DOCKER.md
+
+# Test files
+spec/
+test_input_*.txt
+
+# Development files
+mise.toml
+.ruby-version
+
+# IDE files
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.log
+
+# Bundle cache (we'll install fresh in Docker)
+.bundle/
+vendor/bundle/
+
+# Other
+*.zip
+*.tar.gz
