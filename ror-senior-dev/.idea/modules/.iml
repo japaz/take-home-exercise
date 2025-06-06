@@ -46,7 +46,7 @@
     <orderEntry type="library" scope="PROVIDED" name="rubocop-rspec (v3.6.0, mise: 3.4.4) [gem]" level="application" />
     <orderEntry type="library" scope="PROVIDED" name="ruby-lsp (v0.23.24, mise: 3.4.4) [gem]" level="application" />
     <orderEntry type="library" scope="PROVIDED" name="ruby-progressbar (v1.13.0, mise: 3.4.4) [gem]" level="application" />
-    <orderEntry type="library" scope="PROVIDED" name="sorbet-runtime (v0.5.12152, mise: 3.4.4) [gem]" level="application" />
+    <orderEntry type="library" scope="PROVIDED" name="sorbet-runtime (v0.5.12157, mise: 3.4.4) [gem]" level="application" />
     <orderEntry type="library" scope="PROVIDED" name="stringio (v3.1.7, mise: 3.4.4) [gem]" level="application" />
     <orderEntry type="library" scope="PROVIDED" name="unicode-display_width (v3.1.4, mise: 3.4.4) [gem]" level="application" />
     <orderEntry type="library" scope="PROVIDED" name="unicode-emoji (v4.0.4, mise: 3.4.4) [gem]" level="application" />

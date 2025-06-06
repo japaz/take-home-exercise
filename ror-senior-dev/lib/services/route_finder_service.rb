@@ -58,14 +58,16 @@ module RouteFinder
                    port: origin,
                    cost: 0,
                    arrival_date: nil,
-                   path: [],
                    visited: Set.new([origin])
                  })
 
+      # Track predecessors for path reconstruction
+      predecessors = {}
+
       # Track best solution found so far
       best_solution = nil
-      # Use a very large integer instead of Float::INFINITY to stay in the integer domain
       best_cost = MAX_COST
+      best_destination_key = nil
 
       # If we have a direct route, use its cost as initial best cost
       if direct_route.any?
@@ -83,10 +85,10 @@ module RouteFinder
         current_port = current[:port]
 
         # Check if we've reached the destination
-        if current_port == destination && current[:path].any?
+        if current_port == destination && predecessors.any? { |key, _| key[:port] == current_port }
           if current[:cost] < best_cost
             best_cost = current[:cost]
-            best_solution = current[:path]
+            best_destination_key = { port: current_port, arrival_date: current[:arrival_date] }
           end
           next
         end
@@ -111,8 +113,16 @@ module RouteFinder
           # Skip if cost exceeds the best solution
           next if new_cost >= best_cost
 
-          # Create new path with this sailing
-          new_path = current[:path] + [sailing]
+          # Create node key for the destination of this sailing
+          node_key = { port: next_port, arrival_date: sailing['arrival_date'] }
+
+          # Store predecessor information for path reconstruction
+          predecessors[node_key] = {
+            previous_port: current_port,
+            previous_arrival_date: current[:arrival_date],
+            sailing_taken: sailing,
+            cost: new_cost
+          }
 
           # Add to queue with updated state
           new_visited = current[:visited].dup
@@ -121,20 +131,32 @@ module RouteFinder
                        port: next_port,
                        cost: new_cost,
                        arrival_date: sailing['arrival_date'],
-                       path: new_path,
                        visited: new_visited
                      })
         end
       end
 
-      # If no solution was found, return empty array
-      return [] unless best_solution
+      # If no indirect solution was found, return direct route or empty array
+      return best_solution || [] unless best_destination_key
 
-      # If best solution is already a processed direct route, return it directly
-      return best_solution if best_solution.is_a?(Array) && best_solution.first.key?('rate')
+      # Reconstruct path from predecessors
+      path = []
+      current_key = best_destination_key
+
+      while predecessors.key?(current_key)
+        predecessor_info = predecessors[current_key]
+        sailing = predecessor_info[:sailing_taken]
+        path.unshift(sailing)
+
+        # Move to the previous node
+        current_key = {
+          port: predecessor_info[:previous_port],
+          arrival_date: predecessor_info[:previous_arrival_date]
+        }
+      end
 
       # Add rate_eur_cents information to the final result
-      best_solution.map do |sailing|
+      path.map do |sailing|
         rate_eur_cents = calculate_cost_in_eur_cents(sailing)
         sailing.merge('rate_eur_cents' => rate_eur_cents)
       end
