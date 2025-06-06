@@ -2,12 +2,16 @@
 
 require 'pqueue'
 require 'date'
+require_relative '../errors/application_error'
+require_relative '../validators/port_code_validator'
 
 module RouteFinder
   # Service to find the cheapest or fastest sailing routes.
   class RouteFinderService
     # Initialize the service with sailing, rate, and exchange rate data.
     def initialize(sailings, rates, exchange_rates)
+      validate_init_parameters(sailings, rates, exchange_rates)
+
       @rates_by_code = rates.each_with_object({}) { |r, h| h[r['sailing_code']] = r }
       @cost_cache = {}
       @exchange_rates = process_exchange_rates(exchange_rates)
@@ -16,6 +20,8 @@ module RouteFinder
 
     # Finds the cheapest direct sailing route.
     def find_cheapest_direct(origin, destination)
+      validate_port_codes(origin, destination)
+
       find_best_direct(origin, destination) do |sailing|
         calculate_cost_in_eur_cents(sailing)
       end
@@ -23,6 +29,8 @@ module RouteFinder
 
     # Finds the fastest direct sailing route.
     def find_fastest_direct(origin, destination)
+      validate_port_codes(origin, destination)
+
       find_best_direct(origin, destination) do |sailing|
         (sailing['arrival_date_obj'] - sailing['departure_date_obj']).to_i
       end
@@ -30,17 +38,45 @@ module RouteFinder
 
     # Finds the cheapest route (direct or indirect).
     def find_cheapest_route(origin, destination)
+      validate_port_codes(origin, destination)
+
       strategy = CheapestRouteStrategy.new(method(:calculate_cost_in_eur_cents))
       find_route(origin, destination, strategy)
     end
 
     # Finds the fastest route (direct or indirect).
     def find_fastest_route(origin, destination)
+      validate_port_codes(origin, destination)
+
       strategy = FastestRouteStrategy.new
       find_route(origin, destination, strategy)
     end
 
     private
+
+    # Validates that port codes follow the expected format and exist in our data
+    def validate_port_codes(origin, destination)
+      Validators::PortCodeValidator.validate!(origin, 'origin')
+      Validators::PortCodeValidator.validate!(destination, 'destination')
+
+      # Check if origin port exists in our data
+      return if @port_connections.key?(origin)
+
+      raise Errors::InvalidRouteError, "No sailings found from origin port: #{origin}"
+    end
+
+    # Validates initialization parameters
+    def validate_init_parameters(sailings, rates, exchange_rates)
+      raise Errors::ValidationError, 'Sailings data cannot be nil' if sailings.nil?
+      raise Errors::ValidationError, 'Rates data cannot be nil' if rates.nil?
+      raise Errors::ValidationError, 'Exchange rates data cannot be nil' if exchange_rates.nil?
+
+      raise Errors::ValidationError, 'Sailings must be an array' unless sailings.is_a?(Array)
+
+      raise Errors::ValidationError, 'Rates must be an array' unless rates.is_a?(Array)
+
+      raise Errors::ValidationError, 'Exchange rates must be a hash/object' unless exchange_rates.is_a?(Hash)
+    end
 
     # Generic route-finding algorithm using a strategy for cost/time optimization.
     def find_route(origin, destination, strategy)
@@ -90,6 +126,8 @@ module RouteFinder
       end
 
       strategy.finalize_result(best_solution)
+    rescue StandardError => e
+      raise Errors::ApplicationError, "Error finding route: #{e.message}"
     end
 
     # Abstract base class for routing strategies.
@@ -331,6 +369,8 @@ module RouteFinder
              end
 
       @cost_cache[sailing['sailing_code']] = cost
+    rescue StandardError => e
+      raise Errors::CalculationError, "Error calculating cost for sailing #{sailing['sailing_code']}: #{e.message}"
     end
   end
 end

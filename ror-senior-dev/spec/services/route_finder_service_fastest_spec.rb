@@ -186,7 +186,7 @@ RSpec.describe RouteFinder::RouteFinderService do
       end
 
       it 'returns empty array when no route exists' do
-        result = service.find_fastest_route('CNSHA', 'NONEXISTENT')
+        result = service.find_fastest_route('CNSHA', 'ALDRZ')
         expect(result).to be_empty
       end
 
