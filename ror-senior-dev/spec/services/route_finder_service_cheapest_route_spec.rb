@@ -278,5 +278,124 @@ RSpec.describe RouteFinder::RouteFinderService do
         expect(result[1]['sailing_code']).to eq('LIVHAM2')
       end
     end
+
+    context 'when routes with potential cycles exist' do
+      let(:cycle_sailings) do
+        [
+          # Direct route from CNSHA to NLRTM
+          {
+            'origin_port' => 'CNSHA',
+            'destination_port' => 'NLRTM',
+            'departure_date' => '2022-02-01',
+            'arrival_date' => '2022-02-28',
+            'sailing_code' => 'DIRCT'
+          },
+          # Potential cycle: CNSHA -> ESBCN -> BRSSZ -> CNSHA -> NLRTM
+          {
+            'origin_port' => 'CNSHA',
+            'destination_port' => 'ESBCN',
+            'departure_date' => '2022-01-15',
+            'arrival_date' => '2022-01-25',
+            'sailing_code' => 'CYCA1'
+          },
+          {
+            'origin_port' => 'ESBCN',
+            'destination_port' => 'BRSSZ',
+            'departure_date' => '2022-01-26',
+            'arrival_date' => '2022-02-05',
+            'sailing_code' => 'CYCA2'
+          },
+          {
+            'origin_port' => 'BRSSZ',
+            'destination_port' => 'CNSHA',
+            'departure_date' => '2022-02-06',
+            'arrival_date' => '2022-02-15',
+            'sailing_code' => 'CYCA3'
+          },
+          {
+            'origin_port' => 'CNSHA',
+            'destination_port' => 'NLRTM',
+            'departure_date' => '2022-02-16',
+            'arrival_date' => '2022-02-25',
+            'sailing_code' => 'CYCA4'
+          }
+        ]
+      end
+
+      let(:cycle_rates) do
+        [
+          # Make direct route more expensive
+          {
+            'sailing_code' => 'DIRCT',
+            'rate' => '1000.00',
+            'rate_currency' => 'USD'
+          },
+          # Make cycle route legs very cheap to tempt algorithm
+          {
+            'sailing_code' => 'CYCA1',
+            'rate' => '50.00',
+            'rate_currency' => 'USD'
+          },
+          {
+            'sailing_code' => 'CYCA2',
+            'rate' => '50.00',
+            'rate_currency' => 'USD'
+          },
+          {
+            'sailing_code' => 'CYCA3',
+            'rate' => '50.00',
+            'rate_currency' => 'USD'
+          },
+          {
+            'sailing_code' => 'CYCA4',
+            'rate' => '50.00',
+            'rate_currency' => 'USD'
+          }
+        ]
+      end
+
+      let(:cycle_exchange_rates) do
+        {
+          '2022-01-15' => { 'usd' => 1.10, 'jpy' => 127.8 },
+          '2022-01-26' => { 'usd' => 1.10, 'jpy' => 127.8 },
+          '2022-02-01' => { 'usd' => 1.10, 'jpy' => 127.8 },
+          '2022-02-06' => { 'usd' => 1.10, 'jpy' => 127.8 },
+          '2022-02-16' => { 'usd' => 1.10, 'jpy' => 127.8 }
+        }
+      end
+
+      it 'avoids cycles even when they might appear cheaper' do
+        # Create service with the cycle route data
+        cycle_service = described_class.new(
+          cycle_sailings,
+          cycle_rates,
+          cycle_exchange_rates
+        )
+
+        # Find the cheapest route
+        result = cycle_service.find_cheapest_route('CNSHA', 'NLRTM')
+
+        # The algorithm may select CYCA4 as it's the cheapest direct path from CNSHA to NLRTM
+        # but should not include a full cycle back to CNSHA
+
+        # Verify we never visit a port more than once in a single path
+        visited_ports = Set.new
+
+        result.each do |leg|
+          origin = leg['origin_port']
+          destination = leg['destination_port']
+
+          # Ensure no port is visited twice as an origin (except for potentially CNSHA)
+          expect(visited_ports).not_to include(origin) unless origin == 'CNSHA'
+
+          visited_ports.add(origin)
+          visited_ports.add(destination)
+        end
+
+        # Verify that we have a valid path from CNSHA to NLRTM
+        expect(result.first['origin_port']).to eq('CNSHA')
+        expect(result.last['destination_port']).to eq('NLRTM')
+      end
+    end
   end
 end
