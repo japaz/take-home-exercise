@@ -69,7 +69,7 @@ RSpec.describe RouteFinder::RouteFinderService do
         'origin_port' => 'CNSHA',
         'destination_port' => 'NLRTM',
         'departure_date' => '2022-02-05',
-        'arrival_date' => '2022-02-25', # 20 days - fastest direct
+        'arrival_date' => '2022-02-20', # 15 days - fastest direct
         'sailing_code' => 'FAST'
       }
     ]
@@ -150,7 +150,7 @@ RSpec.describe RouteFinder::RouteFinderService do
           'origin_port' => 'CNSHA',
           'destination_port' => 'NLRTM',
           'departure_date' => '2022-02-05',
-          'arrival_date' => '2022-02-25',
+          'arrival_date' => '2022-02-20',
           'sailing_code' => 'FAST'
         )
       end
@@ -159,7 +159,7 @@ RSpec.describe RouteFinder::RouteFinderService do
         # Modify sailings to make indirect route faster
         modified_sailings = sailings.reject { |s| s['sailing_code'] == 'FAST' }
         service_without_fast = described_class.new(modified_sailings, rates, exchange_rates)
-        
+
         result = service_without_fast.find_fastest_route('CNSHA', 'NLRTM')
 
         expect(result.size).to eq(2)
@@ -175,12 +175,12 @@ RSpec.describe RouteFinder::RouteFinderService do
           'departure_date' => '2022-02-07', # Takes the one with earlier departure
           'arrival_date' => '2022-02-15'
         )
-        
+
         # Calculate total days for verification
         dep_date = Date.parse(result[0]['departure_date'])
         arr_date = Date.parse(result[1]['arrival_date'])
         total_days = (arr_date - dep_date).to_i
-        
+
         # The total should be less than any direct option
         expect(total_days).to be < 28 # ABCD or IJKL direct routes (28 days)
       end
@@ -222,8 +222,8 @@ RSpec.describe RouteFinder::RouteFinderService do
         ]
 
         additional_exchange_rates = exchange_rates.merge({
-          '2022-02-10' => { 'usd' => 1.13, 'jpy' => 130.0 }
-        })
+                                                           '2022-02-10' => { 'usd' => 1.13, 'jpy' => 130.0 }
+                                                         })
 
         service_with_three_legs = described_class.new(additional_sailings, additional_rates, additional_exchange_rates)
         result = service_with_three_legs.find_fastest_route('CNSHA', 'NLRTM')
@@ -233,15 +233,15 @@ RSpec.describe RouteFinder::RouteFinderService do
         expect(result[0]['sailing_code']).to eq('ERXQ')    # CNSHA -> ESBCN
         expect(result[1]['sailing_code']).to eq('BCNPAR')  # ESBCN -> FRPAR
         expect(result[2]['sailing_code']).to eq('PARRTM')  # FRPAR -> NLRTM
-        
+
         # Calculate total journey time
         dep_date = Date.parse(result[0]['departure_date'])
         arr_date = Date.parse(result[2]['arrival_date'])
         total_days = (arr_date - dep_date).to_i
-        
+
         expect(total_days).to be < 20 # Less than the fastest direct sailing (20 days)
       end
-      
+
       it 'does not select a sailing if its departure_date is before or equal to the previous arrival_date' do
         sailings = [
           {
@@ -294,15 +294,15 @@ RSpec.describe RouteFinder::RouteFinderService do
         expect(result.size).to eq(2)
         expect(result[0]['sailing_code']).to eq('NYLIV1') # First leg
         expect(result[1]['sailing_code']).to eq('LIVHAM2') # Second leg should be LIVHAM2, not LIVHAM1
-        
+
         # Total journey time should be 13 days (9 + 1 layover + 3)
         dep_date = Date.parse(result[0]['departure_date'])
         arr_date = Date.parse(result[1]['arrival_date'])
         total_days = (arr_date - dep_date).to_i
-        
+
         expect(total_days).to be < 15 # Less than the direct route (15 days)
       end
-      
+
       it 'prefers the route with earliest arrival when total journey times are equal' do
         sailings = [
           # Route 1 - earlier departure, same total journey time

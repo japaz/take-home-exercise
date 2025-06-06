@@ -1,279 +1,336 @@
 # frozen_string_literal: true
 
-# Validate all the values in the json files and discard all wrong values
-
 require 'pqueue'
 require 'date'
 
 module RouteFinder
+  # Service to find the cheapest or fastest sailing routes.
   class RouteFinderService
-    # Constant to represent "infinity" for integer-based cost calculations
-    MAX_COST = 2_147_483_647 # Max 32-bit signed integer
-
-    # Initialize the service with data
+    # Initialize the service with sailing, rate, and exchange rate data.
     def initialize(sailings, rates, exchange_rates)
-      @sailings = sailings
-      @rates = rates
-      @rate_scale = 10_000 # Scale factor for exchange rates
-      @rates_by_code = @rates.each_with_object({}) { |r, h| h[r['sailing_code']] = r }
-      @cost_cache = {} # Memoization cache for calculate_cost_in_eur_cents
-
-      # Process exchange rates first so they're available for sailing processing
+      @rates_by_code = rates.each_with_object({}) { |r, h| h[r['sailing_code']] = r }
+      @cost_cache = {}
       @exchange_rates = process_exchange_rates(exchange_rates)
-
-      # Then process sailings using the processed exchange rates
-      @processed_sailings, @port_connections = process_sailings_and_connections(@sailings)
+      @port_connections = process_sailings_and_connections(sailings)
     end
 
+    # Finds the cheapest direct sailing route.
     def find_cheapest_direct(origin, destination)
-      min_rate_eur_cents = nil
-      cheapest = []
-
-      # Use port_connections to only check sailings from the origin port
-      origin_sailings = @port_connections[origin] || []
-
-      origin_sailings.each do |sailing|
-        next unless sailing['destination_port'] == destination
-
-        rate_eur_cents = calculate_cost_in_eur_cents(sailing)
-        next unless rate_eur_cents # Skip if rate calculation failed
-
-        next unless min_rate_eur_cents.nil? || rate_eur_cents < min_rate_eur_cents
-
-        min_rate_eur_cents = rate_eur_cents
-        cheapest = [sailing.merge('rate_eur_cents' => rate_eur_cents)]
+      find_best_direct(origin, destination) do |sailing|
+        calculate_cost_in_eur_cents(sailing)
       end
-
-      cheapest.empty? ? [] : cheapest
     end
 
-    # Finds the cheapest route from origin to destination, which can be direct or indirect
+    # Finds the fastest direct sailing route.
+    def find_fastest_direct(origin, destination)
+      find_best_direct(origin, destination) do |sailing|
+        (sailing['arrival_date_obj'] - sailing['departure_date_obj']).to_i
+      end
+    end
+
+    # Finds the cheapest route (direct or indirect).
     def find_cheapest_route(origin, destination)
-      # Check direct routes first
-      direct_route = find_cheapest_direct(origin, destination)
+      strategy = CheapestRouteStrategy.new(method(:calculate_cost_in_eur_cents))
+      find_route(origin, destination, strategy)
+    end
 
-      # Initialize priority queue with starting point
-      queue = PQueue.new { |a, b| a[:cost] < b[:cost] }
-      queue.push({
-                   port: origin,
-                   cost: 0,
-                   arrival_date: nil,
-                   visited: Set.new([origin])
-                 })
-
-      # Track predecessors for path reconstruction
-      predecessors = {}
-
-      # Track best solution found so far
-      best_solution = nil
-      best_cost = MAX_COST
-      best_destination_key = nil
-
-      # If we have a direct route, use its cost as initial best cost
-      if direct_route.any?
-        best_cost = direct_route.first['rate_eur_cents']
-        best_solution = direct_route
-      end
-
-      # Dijkstra's algorithm with early termination
-      until queue.empty?
-        current = queue.pop
-
-        # Skip if we've already found a better solution
-        next if current[:cost] >= best_cost
-
-        current_port = current[:port]
-
-        # Check if we've reached the destination
-        if current_port == destination && predecessors.any? { |key, _| key[:port] == current_port }
-          if current[:cost] < best_cost
-            best_cost = current[:cost]
-            best_destination_key = { port: current_port, arrival_date: current[:arrival_date] }
-          end
-          next
-        end
-
-        # Get all valid sailings from current port
-        next_sailings = next_valid_sailings(current_port, current[:arrival_date], current[:visited])
-
-        # Explore each sailing
-        next_sailings.each do |sailing|
-          next_port = sailing['destination_port']
-
-          # Skip if we've already visited this port (no cycles allowed)
-          next if current[:visited].include?(next_port)
-
-          # Calculate cost for this sailing
-          sailing_cost = calculate_cost_in_eur_cents(sailing)
-          next if sailing_cost.nil? # Skip if we can't determine cost
-
-          # Calculate new total cost
-          new_cost = current[:cost] + sailing_cost
-
-          # Skip if cost exceeds the best solution
-          next if new_cost >= best_cost
-
-          # Create node key for the destination of this sailing
-          node_key = { port: next_port, arrival_date: sailing['arrival_date'] }
-
-          # Store predecessor information for path reconstruction
-          predecessors[node_key] = {
-            previous_port: current_port,
-            previous_arrival_date: current[:arrival_date],
-            sailing_taken: sailing,
-            cost: new_cost
-          }
-
-          # Add to queue with updated state
-          new_visited = current[:visited].dup
-          new_visited.add(next_port)
-          queue.push({
-                       port: next_port,
-                       cost: new_cost,
-                       arrival_date: sailing['arrival_date'],
-                       visited: new_visited
-                     })
-        end
-      end
-
-      # If no indirect solution was found, return direct route or empty array
-      return best_solution || [] unless best_destination_key
-
-      # Reconstruct path from predecessors
-      path = []
-      current_key = best_destination_key
-
-      while predecessors.key?(current_key)
-        predecessor_info = predecessors[current_key]
-        sailing = predecessor_info[:sailing_taken]
-        path.unshift(sailing)
-
-        # Move to the previous node
-        current_key = {
-          port: predecessor_info[:previous_port],
-          arrival_date: predecessor_info[:previous_arrival_date]
-        }
-      end
-
-      # Add rate_eur_cents information to the final result
-      path.map do |sailing|
-        rate_eur_cents = calculate_cost_in_eur_cents(sailing)
-        sailing.merge('rate_eur_cents' => rate_eur_cents)
-      end
+    # Finds the fastest route (direct or indirect).
+    def find_fastest_route(origin, destination)
+      strategy = FastestRouteStrategy.new
+      find_route(origin, destination, strategy)
     end
 
     private
 
-    # Process and filter sailings during initialization
-    # Merge sailing and rate information, discarding sailings without valid rates
-    def process_sailings_and_connections(sailings)
-      connections = Hash.new { |h, k| h[k] = [] }
+    # Generic route-finding algorithm using a strategy for cost/time optimization.
+    def find_route(origin, destination, strategy)
+      # First, find the best direct route to set a baseline for optimization.
+      direct_route = strategy.find_direct_route(self, origin, destination)
 
-      processed = sailings.filter_map do |sailing|
-        rate_info = @rates_by_code[sailing['sailing_code']]
-        next unless rate_info
+      best_solution = direct_route
+      best_solution_metric = strategy.get_solution_metric(best_solution)
 
-        currency = rate_info['rate_currency'].downcase
-        next unless currency == 'eur' ||
-                    @exchange_rates.dig(sailing['departure_date'], currency)&.positive?
+      # Initialize priority queue for Dijkstra's algorithm.
+      pq = PQueue.new(&strategy.method(:compare_nodes))
+      pq.push(strategy.create_initial_node(origin))
 
-        # Convert rate to integer cents, but keep original rate for backward compatibility
-        rate_cents = (rate_info['rate'].to_f * 100).round
+      predecessors = {}
+      visited_costs = Hash.new { |h, k| h[k] = Float::INFINITY }
 
-        # Pre-parse dates into Date objects to avoid repeated parsing
-        begin
-          departure_date = Date.parse(sailing['departure_date'])
-          arrival_date = Date.parse(sailing['arrival_date'])
-        rescue Date::Error
-          # Skip sailings with invalid dates
+      # Main algorithm loop
+      until pq.empty?
+        current_node = pq.pop
+
+        # Pruning: If the current path is already worse than our best found solution, skip.
+        next if strategy.prune?(current_node, best_solution_metric)
+
+        # Check if we've reached the destination.
+        if current_node.port == destination
+          # If we found a better solution, update the best known.
+          if strategy.is_better_solution?(current_node, best_solution_metric)
+            best_solution_metric = strategy.get_node_metric(current_node)
+            best_solution = reconstruct_path(predecessors, current_node)
+          end
           next
         end
 
-        merged = sailing.merge(
-          'rate' => rate_info['rate'], # Keep original rate for backward compatibility
-          'rate_cents' => rate_cents,
-          'rate_currency' => rate_info['rate_currency'],
-          'departure_date_obj' => departure_date,
-          'arrival_date_obj' => arrival_date
-        )
+        # Explore next possible sailings.
+        next_sailings = find_next_valid_sailings(current_node)
+        next_sailings.each do |sailing|
+          next_node = strategy.create_next_node(current_node, sailing)
+          next unless next_node
 
-        # Group sailings by origin port
-        connections[merged['origin_port']] << merged
+          # If we've found a more expensive path to the same port, skip.
+          next if next_node.cost >= visited_costs[next_node.port]
 
-        merged
-      end
-
-      # Sort each port's sailings by departure date after all processing is complete
-      connections.each_value { |sailing_list| sailing_list.sort_by! { |s| s['departure_date_obj'] } }
-
-      [processed, connections]
-    end
-
-    # Find all valid next sailings from a port after a specific date
-    def next_valid_sailings(port, prev_arrival_date, visited_ports)
-      sailings = @port_connections[port] || []
-      return [] if sailings.empty?
-
-      start_index = 0
-      if prev_arrival_date
-        arrival_date = prev_arrival_date.is_a?(Date) ? prev_arrival_date : Date.parse(prev_arrival_date)
-
-        # Use binary search to find the index of the first valid sailing as the sailings are sorted by departure date
-        first_valid_index = sailings.bsearch_index { |s| s['departure_date_obj'] > arrival_date }
-
-        # If no sailing departs after the arrival date, there are no valid next sailings.
-        return [] if first_valid_index.nil?
-
-        start_index = first_valid_index
-      end
-
-      # We only need to consider the slice of sailings from the start index onward.
-      sailings[start_index..].reject do |sailing|
-        visited_ports.include?(sailing['destination_port'])
-      end
-    end
-
-    # Calculate the cost of a sailing in EUR cents
-    def calculate_cost_in_eur_cents(sailing)
-      # Check if we've already calculated the cost for this sailing
-      sailing_code = sailing['sailing_code']
-      return @cost_cache[sailing_code] if @cost_cache.key?(sailing_code)
-
-      # Rate information is already merged in the sailing object
-      currency = sailing['rate_currency'].downcase
-
-      # Use rate_cents that we pre-calculated during initialization
-      rate_in_cents = sailing['rate_cents']
-      return nil unless rate_in_cents
-
-      result = if currency == 'eur'
-                 rate_in_cents # EUR is the base currency, no conversion needed
-               else
-                 scaled_exchange_rate = @exchange_rates.dig(sailing['departure_date'], currency)
-                 return nil unless scaled_exchange_rate&.positive?
-
-                 # Convert to EUR cents using integer arithmetic
-                 # The formula is: (rate_in_cents * rate_scale) / scaled_exchange_rate
-                 # This keeps everything in integer domain until the final division
-                 (rate_in_cents * @rate_scale) / scaled_exchange_rate
-               end
-
-      # Cache the result for future lookups
-      @cost_cache[sailing_code] = result
-      result
-    end
-
-    # Process exchange rates to convert them to integers
-    def process_exchange_rates(exchange_rates)
-      # Scale factor for exchange rates
-      scale_factor = @rate_scale
-
-      # Convert exchange rates to integers (cents)
-      exchange_rates.each_with_object({}) do |(date, rates), result|
-        result[date] = rates.transform_values do |rate|
-          rate ? (rate.to_f * scale_factor).round : nil
+          visited_costs[next_node.port] = next_node.cost
+          predecessors[next_node] = { previous_node: current_node, sailing: sailing }
+          pq.push(next_node)
         end
       end
+
+      strategy.finalize_result(best_solution)
+    end
+
+    # Abstract base class for routing strategies.
+    class BaseStrategy
+      # A simple container for the state of our search algorithm.
+      Node = Struct.new(:port, :cost, :secondary_metric, :arrival_date, :start_date, :path_legs)
+
+      # Default comparison for the priority queue.
+      def compare_nodes(a, b)
+        a.cost < b.cost
+      end
+
+      # Checks if a potential path should be abandoned early.
+      def prune?(node, best_solution_metric)
+        node.cost >= best_solution_metric[:cost]
+      end
+
+      # Checks if the newly found complete route is better than the best one so far.
+      def is_better_solution?(node, best_solution_metric)
+        node.cost < best_solution_metric[:cost]
+      end
+
+      # Extracts the relevant metrics from a node.
+      def get_node_metric(node)
+        { cost: node.cost, secondary: node.secondary_metric }
+      end
+
+      # Extracts metrics from a full solution path.
+      def get_solution_metric(solution)
+        return { cost: Float::INFINITY, secondary: nil } if solution.empty?
+
+        cost = solution.sum { |leg| leg[:cost_in_cents] }
+        { cost: cost, secondary: nil }
+      end
+
+      # Processes the final path before returning it.
+      def finalize_result(path)
+        path
+      end
+    end
+
+    # Strategy for finding the CHEAPEST route.
+    class CheapestRouteStrategy < BaseStrategy
+      def initialize(cost_calculator)
+        @cost_calculator = cost_calculator
+        super()
+      end
+
+      def find_direct_route(service, origin, destination)
+        service.find_cheapest_direct(origin, destination)
+      end
+
+      def create_initial_node(origin)
+        Node.new(origin, 0, nil, nil, nil, 0)
+      end
+
+      def create_next_node(current_node, sailing)
+        sailing_cost = @cost_calculator.call(sailing)
+        return nil unless sailing_cost
+
+        Node.new(
+          sailing['destination_port'],
+          current_node.cost + sailing_cost,
+          nil,
+          sailing['arrival_date_obj'],
+          current_node.start_date || sailing['departure_date_obj'],
+          current_node.path_legs + 1
+        )
+      end
+
+      def finalize_result(path)
+        # Add the calculated rate in EUR cents to each leg of the journey
+        path.map do |sailing|
+          rate_eur_cents = @cost_calculator.call(sailing)
+          sailing.merge('rate_eur_cents' => rate_eur_cents)
+        end
+      end
+    end
+
+    # Strategy for finding the FASTEST route.
+    class FastestRouteStrategy < BaseStrategy
+      def find_direct_route(service, origin, destination)
+        service.find_fastest_direct(origin, destination)
+      end
+
+      def compare_nodes(a, b)
+        return a.cost < b.cost if a.cost != b.cost
+
+        a.secondary_metric < b.secondary_metric # Earliest arrival is better
+      end
+
+      def prune?(node, best_solution_metric)
+        return true if node.cost > best_solution_metric[:cost]
+
+        node.cost == best_solution_metric[:cost] && node.secondary_metric >= best_solution_metric[:secondary]
+      end
+
+      def is_better_solution?(node, best_solution_metric)
+        return true if node.cost < best_solution_metric[:cost]
+
+        node.cost == best_solution_metric[:cost] && node.secondary_metric < best_solution_metric[:secondary]
+      end
+
+      def get_solution_metric(solution)
+        return { cost: Float::INFINITY, secondary: nil } if solution.empty?
+
+        start_date = solution.first['departure_date_obj']
+        end_date = solution.last['arrival_date_obj']
+
+        { cost: (end_date - start_date).to_i, secondary: end_date }
+      end
+
+      def create_initial_node(origin)
+        Node.new(origin, 0, nil, nil, nil, 0)
+      end
+
+      def create_next_node(current_node, sailing)
+        start_date = current_node.start_date || sailing['departure_date_obj']
+        journey_time = (sailing['arrival_date_obj'] - start_date).to_i
+
+        Node.new(
+          sailing['destination_port'],
+          journey_time,
+          sailing['arrival_date_obj'], # Secondary metric: arrival date
+          sailing['arrival_date_obj'],
+          start_date,
+          current_node.path_legs + 1
+        )
+      end
+    end
+
+    # Generic method to find the single best direct sailing based on a metric.
+    def find_best_direct(origin, destination)
+      best_sailing = nil
+      min_metric = Float::INFINITY
+
+      return [] unless @port_connections[origin]
+
+      @port_connections[origin].each do |sailing|
+        next unless sailing['destination_port'] == destination
+
+        # The block here calculates the metric (cost or time)
+        metric = yield(sailing)
+        next if metric.nil? || metric >= min_metric
+
+        min_metric = metric
+        best_sailing = sailing
+      end
+
+      best_sailing ? [best_sailing.merge(cost_in_cents: min_metric)] : []
+    end
+
+    # Pre-processes sailings: filters invalid ones, merges rate data, and groups by origin.
+    def process_sailings_and_connections(sailings)
+      connections = Hash.new { |h, k| h[k] = [] }
+
+      sailings.each do |sailing|
+        rate_info = @rates_by_code[sailing['sailing_code']]
+        next unless rate_info && has_valid_rate?(sailing, rate_info)
+
+        begin
+          sailing.merge!(
+            'rate' => rate_info['rate'],
+            'rate_currency' => rate_info['rate_currency'],
+            'departure_date_obj' => Date.parse(sailing['departure_date']),
+            'arrival_date_obj' => Date.parse(sailing['arrival_date'])
+          )
+          connections[sailing['origin_port']] << sailing
+        rescue Date::Error
+          next # Skip sailings with invalid dates.
+        end
+      end
+
+      # Sort sailings by departure date for efficient searching later.
+      connections.each_value { |sailing_list| sailing_list.sort_by! { |s| s['departure_date_obj'] } }
+      connections
+    end
+
+    # Checks if a sailing has a valid, convertible rate.
+    def has_valid_rate?(sailing, rate_info)
+      currency = rate_info['rate_currency'].downcase
+      return true if currency == 'eur'
+
+      @exchange_rates.dig(sailing['departure_date'], currency)&.positive?
+    end
+
+    # Scales exchange rates to integers for precise calculations.
+    def process_exchange_rates(exchange_rates)
+      scale_factor = 10_000
+      exchange_rates.each_with_object({}) do |(date, rates), result|
+        result[date] = rates.transform_values do |rate|
+          (rate.to_f * scale_factor).round if rate
+        end
+      end
+    end
+
+    # Finds all valid sailings from a port after a node's arrival.
+    def find_next_valid_sailings(current_node)
+      sailings = @port_connections[current_node.port] || []
+      return [] if sailings.empty? || current_node.path_legs > 10 # Safety break for long routes
+
+      # If it's not the start, find sailings departing after the last arrival.
+      if current_node.arrival_date
+        # bsearch_index is fast (O(log n)) because we pre-sorted the sailings.
+        start_index = sailings.bsearch_index { |s| s['departure_date_obj'] > current_node.arrival_date }
+        return [] if start_index.nil?
+
+        sailings = sailings[start_index..-1]
+      end
+      sailings
+    end
+
+    # Reconstructs the final path from the predecessors map.
+    def reconstruct_path(predecessors, end_node)
+      path = []
+      current = end_node
+      while current && predecessors[current]
+        info = predecessors[current]
+        path.unshift(info[:sailing])
+        current = info[:previous_node]
+      end
+      path
+    end
+
+    # Calculates the cost of a single sailing in EUR cents, with caching.
+    def calculate_cost_in_eur_cents(sailing)
+      return @cost_cache[sailing['sailing_code']] if @cost_cache.key?(sailing['sailing_code'])
+
+      rate_in_cents = (sailing['rate'].to_f * 100).round
+      currency = sailing['rate_currency'].downcase
+
+      cost = if currency == 'eur'
+               rate_in_cents
+             else
+               exchange_rate = @exchange_rates.dig(sailing['departure_date'], currency)
+               return nil unless exchange_rate&.positive?
+
+               (rate_in_cents * 10_000) / exchange_rate
+             end
+
+      @cost_cache[sailing['sailing_code']] = cost
     end
   end
 end
