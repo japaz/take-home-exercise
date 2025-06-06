@@ -168,6 +168,7 @@ module RouteFinder
     # Merge sailing and rate information, discarding sailings without valid rates
     def process_sailings_and_connections(sailings)
       connections = Hash.new { |h, k| h[k] = [] }
+
       processed = sailings.filter_map do |sailing|
         rate_info = @rates_by_code[sailing['sailing_code']]
         next unless rate_info
@@ -195,30 +196,40 @@ module RouteFinder
           'departure_date_obj' => departure_date,
           'arrival_date_obj' => arrival_date
         )
+
+        # Group sailings by origin port
         connections[merged['origin_port']] << merged
+
         merged
       end
+
+      # Sort each port's sailings by departure date after all processing is complete
+      connections.each_value { |sailing_list| sailing_list.sort_by! { |s| s['departure_date_obj'] } }
+
       [processed, connections]
     end
 
     # Find all valid next sailings from a port after a specific date
     def next_valid_sailings(port, prev_arrival_date, visited_ports)
       sailings = @port_connections[port] || []
-      sailings.select do |sailing|
-        # Check if departure date is on or after previous arrival
-        if prev_arrival_date
-          # Use the pre-parsed date objects instead of parsing again
-          departure_date = sailing['departure_date_obj']
+      return [] if sailings.empty?
 
-          # If we're given a string for prev_arrival_date, parse it once
-          arrival_date = prev_arrival_date.is_a?(Date) ? prev_arrival_date : Date.parse(prev_arrival_date)
+      start_index = 0
+      if prev_arrival_date
+        arrival_date = prev_arrival_date.is_a?(Date) ? prev_arrival_date : Date.parse(prev_arrival_date)
 
-          # Skip if departure is before or equal to arrival
-          next false if departure_date <= arrival_date
-        end
+        # Use binary search to find the index of the first valid sailing as the sailings are sorted by departure date
+        first_valid_index = sailings.bsearch_index { |s| s['departure_date_obj'] > arrival_date }
 
-        # Don't go to ports we've already visited
-        !visited_ports.include?(sailing['destination_port'])
+        # If no sailing departs after the arrival date, there are no valid next sailings.
+        return [] if first_valid_index.nil?
+
+        start_index = first_valid_index
+      end
+
+      # We only need to consider the slice of sailings from the start index onward.
+      sailings[start_index..].reject do |sailing|
+        visited_ports.include?(sailing['destination_port'])
       end
     end
 
