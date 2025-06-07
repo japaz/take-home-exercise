@@ -6,8 +6,14 @@ require_relative './errors/application_error'
 
 module RouteFinder
   class DataLoader
-    def initialize(file_path)
-      @file_path = file_path
+    DEFAULT_FILE_PATH = File.join(File.dirname(__FILE__), '../response.json')
+
+    def self.data_file_path
+      ENV['ROUTE_FINDER_DATA_FILE'] || DEFAULT_FILE_PATH
+    end
+
+    def initialize(file_path = nil)
+      @file_path = file_path || self.class.data_file_path
     end
 
     def load
@@ -40,10 +46,16 @@ module RouteFinder
 
     def validate_data_structure(data)
       # Check for required top-level keys
-      %w[sailings rates exchange_rates].each do |key|
-        unless data.key?(key) && data[key].is_a?(Array)
-          raise Errors::InvalidDataError, "Missing or invalid '#{key}' data in JSON file"
-        end
+      unless data.key?('sailings') && data['sailings'].is_a?(Array)
+        raise Errors::InvalidDataError, "Missing or invalid 'sailings' data in JSON file"
+      end
+
+      unless data.key?('rates') && data['rates'].is_a?(Array)
+        raise Errors::InvalidDataError, "Missing or invalid 'rates' data in JSON file"
+      end
+
+      unless data.key?('exchange_rates') && data['exchange_rates'].is_a?(Hash)
+        raise Errors::InvalidDataError, "Missing or invalid 'exchange_rates' data in JSON file"
       end
 
       # Validate sailings data
